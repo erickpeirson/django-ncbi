@@ -1,5 +1,13 @@
 from django.db import models
+from django.contrib.auth.models import User
+from django.core.urlresolvers import reverse
+
 import ast
+
+DBCHOICES = (
+    ('PubMed', 'PubMed'),
+    ('PMC', 'PMC')
+)
 
 class ListField(models.TextField):
     __metaclass__ = models.SubfieldBase
@@ -28,14 +36,19 @@ class ListField(models.TextField):
         return self.get_db_prep_value(value)
 
 class Paper(models.Model):
-    title = models.CharField(max_length=255)
+    title = models.CharField(max_length=255, null=True)
     abstract = models.TextField()
-    pubdate = models.DateField()
-    pmid = models.CharField(max_length=50, unique=True)
+    pubdate = models.DateField(null=True)
+    identifier = models.CharField(max_length=50, unique=True)
+    source = models.CharField(max_length=255,
+                              choices=DBCHOICES)
+
     published_in = models.ForeignKey('Journal', null=True)
     authors = models.ManyToManyField('Person')
     mesh_headings = models.ManyToManyField('MeSHHeading')
     funding = models.ManyToManyField('Grant')
+
+    retrieved = models.BooleanField(default=False)
 
 class Journal(models.Model):
     title = models.CharField(max_length=255)
@@ -80,7 +93,8 @@ class MeSHHeading(models.Model):
 
     def __unicode__(self):
         if self.qualifier:
-            return u'{0}/{1}'.format(self.descriptor.descriptor, self.qualifier.subheading)
+            return u'{0}/{1}'.format(self.descriptor.descriptor,
+                                     self.qualifier.subheading)
         else:
             return u'{0}'.format(self.descriptor.descriptor)
 
@@ -90,3 +104,23 @@ class MeSHDescriptor(models.Model):
 
 class MeSHQualifier(models.Model):
     subheading = models.CharField(max_length=255)
+
+class Query(models.Model):
+    class Meta:
+        verbose_name_plural = 'queries'
+
+    created_by = models.ForeignKey(User, related_name='queries')
+    created_on = models.DateTimeField(auto_now_add=True)
+    executed_on = models.DateTimeField(null=True)
+    executed = models.BooleanField(default=False)
+    querystring = models.TextField()
+    database = models.CharField(max_length=255, choices=DBCHOICES)
+    retmax = models.IntegerField(default=100)
+
+    results = models.ManyToManyField(Paper, blank=True)
+
+    def results_link(self, *args, **kwargs):
+        baseurl = reverse('admin:query_paper_changelist')
+        url = "{url}?query={query}".format(url=baseurl, query=self.id)
+        return '<a href="{0}">{1} results</a>'.format(url, self.results.count())
+    results_link.allow_tags = True

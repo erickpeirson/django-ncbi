@@ -19,18 +19,28 @@ def get_smart(e, element):
 
 class NCBIManager(object):
     endpoint = ''.join(['http://eutils.ncbi.nlm.nih.gov/entrez/eutils',
-                             '/efetch.fcgi?db={db}&id={id}&rettype=xml'])
+                             '/efetch.fcgi?db={db}&id={term}&rettype=xml'])
+    searchpoint = ''.join(['http://eutils.ncbi.nlm.nih.gov/entrez/eutils',
+                           '/esearch.fcgi?db={db}&term={term}&rettype=xml',
+                           '&retmax={retmax}'])
 
-    def get_resource(self, identifier):
-        resource = self.endpoint.format(db=self.db, id=identifier)
+    def get_resource(self, endpoint, **kwargs):
+        resource = endpoint.format(db=self.db, **kwargs)
         response_content = urllib2.urlopen(resource).read()
         return ET.fromstring(response_content)
 
     def fetch(self, identifier):
-        return self.process_resource(self.get_resource(identifier), identifier)
+        result = self.get_resource(self.endpoint, term=identifier)
+        return self.process_resource(result, identifier)
+
+    def search(self, query):
+        results = self.get_resource(self.searchpoint,
+                                    term=urllib2.quote(query.querystring),
+                                    retmax=query.retmax)
+        return self.process_searchresults(results, query)
 
 class PubMedManager(NCBIManager):
-    db = 'pubmed'
+    db = 'PubMed'
     authorlist_path = 'PubmedArticle/MedlineCitation/Article/AuthorList'
     authorname_path = './/Author'
     author_forename = 'ForeName'
@@ -159,20 +169,31 @@ class PubMedManager(NCBIManager):
 
     def handle_abstract(self, e):
         absElement = e.find(self.abstract_path)
+        if absElement is None:
+            return ''
         return ' '.join([re.sub(r'<[^>]*?>', '', ET.tostring(elem)) for elem
                          in absElement.findall(self.abstract_section_path)])
 
-    def process_resource(self, e, pmid):
+    def process_searchresults(self, results, query):
+        for entry in results.findall('.//IdList/Id'):
+            identifier = entry.text
+            paper = Paper.objects.get_or_create(identifier=identifier,
+                                                source=self.db)[0]
+            # result = Result(paper=paper, query=query)
+            # result.save()
+            query.results.add(paper)
+        query.save()
+
+    def process_resource(self, e, identifier):
         date = self.handle_date(e)
         title = get_smart(e, './/ArticleTitle')
         abstract = self.handle_abstract(e)
 
-        p = Paper.objects.get_or_create(pmid=pmid,
-                                        defaults={
-                                            'pubdate': date,
-                                            'title': title,
-                                            'abstract': abstract
-                                        })[0]
+        p, created = Paper.objects.get_or_create(identifier=identifier,
+                                        source=self.db)
+        p.pubdate = date
+        p.title = title
+        p.abstract = abstract
 
         grants = self.handle_grants(e)
         for grant in grants:
@@ -195,7 +216,8 @@ class PubMedManager(NCBIManager):
 
 
 class PMCManager(PubMedManager):
-    db = 'pmc'
+    db = 'PMC'
+
     authorlist_path = './/contrib-group'
     authorname_path = './/contrib[@contrib-type="author"]'
     author_surname = './/name/surname'
